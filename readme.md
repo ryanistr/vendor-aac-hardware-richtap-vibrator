@@ -1,6 +1,6 @@
 # AAC RichTap Vibrator HAL
 
-A Rust implementation of the AAC RichTap vibrator HIDL (Hardware Abstraction Layer) service for Android devices. This is a translator layer based on Nothing OS 4.1 Pacman's RichTap NDK, enabling RichTap haptic effects on devices that do not natively support the RichTap protocol.
+A Rust implementation of the AAC RichTap vibrator AIDL HAL (Hardware Abstraction Layer) service for Android devices. This is a translator layer based on Nothing OS 4.1 Pacman's RichTap NDK, enabling RichTap haptic effects on devices that do not natively support the RichTap protocol.
 
 ## Overview
 
