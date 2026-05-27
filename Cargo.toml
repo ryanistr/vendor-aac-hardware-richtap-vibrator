@@ -1,0 +1,20 @@
+[package]
+name = "vendor-aac-hardware-richtap-vibrator"
+version = "1.0.0"
+edition = "2021"
+authors = ["ryanistr"]
+
+[dependencies]
+rsbinder = { version = "0.6.0", features = ["android_14"] }
+async-trait = "0.1"
+libc = "0.2"
+
+[build-dependencies]
+rsbinder-aidl = "=0.6.0"
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
