@@ -15,82 +15,9 @@ The service implements both the standard Android `android.hardware.vibrator.IVib
 - **Sysfs abstraction** — automatically detects the correct sysfs vibrator node (`/sys/class/leds/vibrator_single/` or `/sys/class/leds/vibrator/`)
 - **Logging** — conditional Android logcat output via `persist.sys.richtap.debug` system property
 
-## Architecture
-
-```
-┌──────────────────────────────────────────────────┐
-│                 Android Framework                │
-│  (android.hardware.vibrator.IVibrator)           │
-└──────────────┬───────────────────────────────────┘
-               │ Binder (rsbinder)
-┌──────────────▼───────────────────────────────────┐
-│              VibratorService                     │
-│  (IVibrator impl — standard HAL)                  │
-│  with IRichtapVibrator extension                  │
-└──────────────┬───────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────┐
-│             RichtapTranslator                    │
-│  (IRichtapVibrator impl — vendor extension)      │
-└──────────────┬───────────────────────────────────┘
-               │
-┌──────────────▼───────────────────────────────────┐
-│                 sysfs                             │
-│  /sys/class/leds/vibrator[_single]/              │
-│    {activate, duration, gain, index}             │
-└──────────────────────────────────────────────────┘
-```
-
-### Modules
-
-| Module | File | Description |
-|--------|------|-------------|
-| `main` | `src/main.rs` | Service entry point; registers both `IVibrator` and `IRichtapVibrator` Binder services |
-| `vibrator` | `src/vibrator.rs` | Standard Android `IVibrator` HAL implementation (on/off/perform/amplitude) |
-| `richtap` | `src/richtap.rs` | Vendor AAC `IRichtapVibrator` implementation — envelope, HE, RTP, amplitude translation |
-| `sysfs` | `src/sysfs.rs` | Low-level sysfs node abstraction for vibrator control |
-| `logger` | `src/logger.rs` | Android logcat integration with debug-gated logging (`persist.sys.richtap.debug`) |
-
-### Source Files
-
-```
-├── aidl/                          # AIDL interface definitions
-│   ├── android/
-│   │   └── hardware/vibrator/     # Standard Android vibrator HAL
-│   │       ├── IVibrator.aidl
-│   │       ├── IVibratorCallback.aidl
-│   │       ├── IVibratorManager.aidl
-│   │       ├── Effect.aidl
-│   │       ├── EffectStrength.aidl
-│   │       ├── CompositeEffect.aidl
-│   │       ├── CompositePrimitive.aidl
-│   │       ├── ActivePwle.aidl
-│   │       ├── Braking.aidl
-│   │       ├── BrakingPwle.aidl
-│   │       └── PrimitivePwle.aidl
-│   └── vendor/aac/hardware/richtap/vibrator/
-│       ├── IRichtapVibrator.aidl   # RichTap vendor API
-│       └── IRichtapCallback.aidl   # RichTap callback
-├── src/
-│   ├── main.rs                    # Service entry point
-│   ├── vibrator.rs                # IVibrator implementation
-│   ├── richtap.rs                 # IRichtapVibrator implementation
-│   ├── sysfs.rs                   # Sysfs abstraction layer
-│   └── logger.rs                  # Logging utilities
-├── build.rs                       # AIDL bindings generation + post-processing
-├── Cargo.toml
-└── readme.md
-```
-
 ## Building
 
 This project uses [rsbinder](https://crates.io/crates/rsbinder) for Rust Binder IPC and requires the Android NDK for cross-compilation.
-
-### Prerequisites
-
-- Rust toolchain (edition 2021)
-- Android NDK (for target `aarch64-linux-android` or similar)
-- `cargo-ndk` or manual cross-compilation setup
 
 ### Build
 
@@ -115,21 +42,6 @@ The release profile is optimized for size and performance:
 - Panic: `abort`
 - Strip symbols
 
-## Deployment
-
-Push the compiled binary to the device and run it as a system service:
-
-```bash
-adb push vendor-aac-hardware-richtap-vibrator /vendor/bin/hw/
-adb shell chmod 755 /vendor/bin/hw/vendor-aac-hardware-richtap-vibrator
-```
-
-Create a `vendor.aac.hardware.richtap.vibrator@1.0-service.rc` init file to launch it at boot, or run it manually:
-
-```bash
-adb shell /vendor/bin/hw/vendor-aac-hardware-richtap-vibrator
-```
-
 ## Debugging
 
 Enable verbose logging via system property:
@@ -147,7 +59,7 @@ adb shell setprop persist.sys.richtap.debug 0
 
 ### Sysfs Nodes
 
-The driver interacts with the following sysfs nodes under `vibrator_single` (or `vibrator` as fallback):
+The driver interacts with the following sysfs nodes under `vibrator_single` or `vibrator`:
 
 | Node | Purpose |
 |------|---------|
@@ -204,8 +116,5 @@ The service reports the following IVibrator capabilities:
 
 ## Credits
 
-Based on Nothing OS 4.1 Pacman's RichTap NDK implementation. Uses [rsbinder](https://crates.io/crates/rsbinder) for Rust Binder IPC.
-
-## License
-
-See LICENSE file (if available) or contact the author.
+Based on Nothing OS 4.1 Pacman's RichTap NDK implementation. 
+Uses [rsbinder](https://crates.io/crates/rsbinder) for Rust Binder IPC.
