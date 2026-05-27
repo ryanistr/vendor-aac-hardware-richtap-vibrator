@@ -224,18 +224,14 @@ impl IRichtapVibrator for RichtapTranslator {
             1.0
         };
 
-        // 1. FAST PATH: Hardcode intercept for short, immediate patterns (e.g., keyboard taps).
-        // This completely bypasses `rel_time` delays and thread spawning overhead.
         if pattern_info.is_empty() || pattern_info.len() <= 16 {
-            // Prefer explicit `interval` (which the Transsion framework uses to pass custom ms),
-            // then check for 4096 embedded duration, otherwise fallback to a short tick.
             let mut duration = if interval > 0 { interval as u32 } else { 10 };
 
             if !pattern_info.is_empty() {
                 if pattern_info[0] == 4096 && pattern_info.len() > 6 {
                     duration = pattern_info[6] as u32;
                 } else if pattern_info[0] == 4097 && interval <= 0 {
-                    duration = 8; // Default fallback for prebaked if interval is missing
+                    duration = 8;
                 }
             }
 
@@ -245,7 +241,6 @@ impl IRichtapVibrator for RichtapTranslator {
             return Ok(());
         }
 
-        // 2. COMPLEX PATH: For long haptic patterns (ringtones, long media).
         let mut events = Vec::with_capacity(pattern_info.len() / 4);
         let mut idx = 0;
         let mut first_event = true;
@@ -256,8 +251,6 @@ impl IRichtapVibrator for RichtapTranslator {
                 let mut rel_time = pattern_info[idx + 3] as u32;
                 let intensity = pattern_info[idx + 4] as u32;
                 let duration = pattern_info[idx + 6] as u32;
-
-                // Force 0 delay for the very first event to kill initial framework latency
                 if first_event {
                     rel_time = 0;
                     first_event = false;
