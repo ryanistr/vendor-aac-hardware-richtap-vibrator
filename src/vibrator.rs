@@ -8,6 +8,7 @@ use crate::android::hardware::vibrator::{
     Braking::Braking,
     PrimitivePwle::PrimitivePwle,
 };
+use crate::richtap::{ cancel_all, clamp_ms, max_on_ms };
 use crate::sysfs;
 use crate::hal_log;
 
@@ -37,13 +38,19 @@ impl IVibrator for VibratorService {
 
     fn off(&self) -> BinderResult<()> {
         hal_log!("IVibrator::off()");
+        // Cancel any RichTap pattern/envelope thread, otherwise it re-arms the motor.
+        cancel_all();
         sysfs::off();
         Ok(())
     }
 
     fn on(&self, timeout_ms: i32, _callback: &SIBinder) -> BinderResult<()> {
         hal_log!("IVibrator::on() - timeout_ms: {}", timeout_ms);
-        sysfs::on(timeout_ms as u32);
+        cancel_all();
+        match clamp_ms(timeout_ms, max_on_ms()) {
+            0 => sysfs::off(),
+            t => sysfs::on(t),
+        }
         Ok(())
     }
 
@@ -70,6 +77,7 @@ impl IVibrator for VibratorService {
                 effect,
                 index
             );
+            cancel_all();
             sysfs::set_index(index);
             sysfs::on(duration);
             Ok(duration as i32)

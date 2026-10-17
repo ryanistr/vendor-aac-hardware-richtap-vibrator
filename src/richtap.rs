@@ -7,7 +7,114 @@ use std::sync::atomic::{ AtomicUsize, Ordering };
 use std::thread;
 use std::time::Duration;
 
-static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+/// Generation counter. Every new command bumps it; background threads compare
+/// against the value they started with and bail out when it changed.
+/// Shared with vibrator.rs so IVibrator::on/off/perform also cancel threads.
+pub static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+
+// RichTap HE (Java flat array) layout: 17 ints per event
+// [0]=first-flag [1]=type [2]=rel_time [3]=intensity [4]=freq [5..16]=extra
+const HE_STRIDE: usize = 17;
+const HE_CONTINUOUS: i32 = 4096;
+const HE_TRANSIENT: i32 = 4097;
+
+const TRANSIENT_MS: u32 = 8; // default length of a transient event
+const DEFAULT_TICK_MS: u32 = 10;
+const MAX_FAST_MS: u32 = 100; // upper bound for single-event fast path
+const MAX_EVENT_MS: u32 = 1000; // upper bound for one event inside a pattern
+const MAX_ON_MS: u32 = 60_000; // upper bound for on(timeout)
+const MAX_ENV_MS: u32 = 30_000; // upper bound for envelope timestamps
+const MAX_LOOPS: usize = 1000;
+
+/// Cancel every running background pattern/envelope and return the new generation.
+pub fn cancel_all() -> usize {
+    SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1
+}
+
+fn is_current(seq: usize) -> bool {
+    SEQUENCE.load(Ordering::SeqCst) == seq
+}
+
+/// Negative -> 0, huge -> `max`. Prevents `-1 as u32 == 4294967295`.
+pub fn clamp_ms(v: i32, max: u32) -> u32 {
+    if v <= 0 { 0 } else { (v as u32).min(max) }
+}
+
+pub fn max_on_ms() -> u32 {
+    MAX_ON_MS
+}
+
+/// (rel_time_ms, duration_ms, intensity_0_100)
+type HeEvent = (u32, u32, u32);
+
+fn at(p: &[i32], i: usize) -> i32 {
+    p.get(i).copied().unwrap_or(0)
+}
+
+fn event_duration(kind: i32, raw: i32) -> u32 {
+    if kind == HE_CONTINUOUS {
+        let d = clamp_ms(raw, MAX_EVENT_MS);
+        if d == 0 { DEFAULT_TICK_MS } else { d }
+    } else {
+        TRANSIENT_MS
+    }
+}
+
+/// Format A: flat array, fixed stride of 17 ints per event (matches the
+/// patternHeInfo[event][field] dump seen in logcat).
+fn parse_he_stride(p: &[i32]) -> Option<Vec<HeEvent>> {
+    if p.len() < HE_STRIDE || p.len() % HE_STRIDE != 0 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(p.len() / HE_STRIDE);
+    for chunk in p.chunks_exact(HE_STRIDE) {
+        let kind = chunk[1];
+        if kind != HE_CONTINUOUS && kind != HE_TRANSIENT {
+            return None;
+        }
+        let rel = clamp_ms(chunk[2], MAX_ENV_MS);
+        let intensity = clamp_ms(chunk[3], 100);
+        out.push((rel, event_duration(kind, chunk[6]), intensity));
+    }
+    Some(out)
+}
+
+/// Format B: native header layout [type, size, _, rel_time, intensity, freq, duration, ...]
+/// with variable event size (`idx += size + 2`). Kept for frameworks that use it.
+fn parse_he_native(p: &[i32]) -> Vec<HeEvent> {
+    let mut out = Vec::new();
+    let mut idx = 0;
+    while idx < p.len() {
+        let kind = p[idx];
+        if kind == HE_CONTINUOUS && idx + 6 < p.len() {
+            let size = clamp_ms(p[idx + 1], 64) as usize;
+            out.push((
+                clamp_ms(p[idx + 3], MAX_ENV_MS),
+                event_duration(kind, p[idx + 6]),
+                clamp_ms(p[idx + 4], 100),
+            ));
+            idx += size + 2;
+        } else if kind == HE_TRANSIENT && idx + 4 < p.len() {
+            let size = clamp_ms(p[idx + 1], 64) as usize;
+            out.push((
+                clamp_ms(p[idx + 3], MAX_ENV_MS),
+                TRANSIENT_MS,
+                clamp_ms(p[idx + 4], 100).max(1),
+            ));
+            idx += size + 2;
+        } else {
+            idx += 1;
+        }
+    }
+    out
+}
+
+fn parse_he(p: &[i32]) -> Vec<HeEvent> {
+    match parse_he_stride(p) {
+        Some(v) => v,
+        None => parse_he_native(p),
+    }
+}
 
 pub struct RichtapTranslator;
 
@@ -44,7 +151,7 @@ impl IRichtapVibrator for RichtapTranslator {
 
     fn stop(&self, _callback: Option<&Strong<dyn IRichtapCallback>>) -> BinderResult<()> {
         hal_log!("IRichtapVibrator::stop()");
-        SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        cancel_all();
         sysfs::off();
         Ok(())
     }
@@ -73,14 +180,20 @@ impl IRichtapVibrator for RichtapTranslator {
             amplitude,
             freq
         );
+        cancel_all();
         let amp_f32 = ((amplitude as f32) / 255.0).clamp(0.0, 1.0);
+        let duration = match clamp_ms(interval, MAX_FAST_MS) {
+            0 => DEFAULT_TICK_MS,
+            d => d,
+        };
         sysfs::set_amplitude(amp_f32);
+        sysfs::on(duration);
         Ok(())
     }
 
     fn off(&self, _callback: Option<&Strong<dyn IRichtapCallback>>) -> BinderResult<()> {
         hal_log!("IRichtapVibrator::off()");
-        SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        cancel_all();
         sysfs::off();
         Ok(())
     }
@@ -91,8 +204,11 @@ impl IRichtapVibrator for RichtapTranslator {
         _callback: Option<&Strong<dyn IRichtapCallback>>
     ) -> BinderResult<()> {
         hal_log!("IRichtapVibrator::on() - timeout_ms: {}", timeout_ms);
-        SEQUENCE.fetch_add(1, Ordering::SeqCst);
-        sysfs::on(timeout_ms as u32);
+        cancel_all();
+        match clamp_ms(timeout_ms, MAX_ON_MS) {
+            0 => sysfs::off(),
+            t => sysfs::on(t),
+        }
         Ok(())
     }
 
@@ -102,7 +218,7 @@ impl IRichtapVibrator for RichtapTranslator {
         _strength: i8,
         _callback: Option<&Strong<dyn IRichtapCallback>>
     ) -> BinderResult<i32> {
-        SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        cancel_all();
         let (index, duration) = match effect {
             2 => (1, 10), // Effect::TICK
             0 => (2, 15), // Effect::CLICK
@@ -125,8 +241,8 @@ impl IRichtapVibrator for RichtapTranslator {
             Ok(duration as i32)
         } else {
             hal_log!("IRichtapVibrator::perform() - raw fallback for effect {}", effect);
-            sysfs::on(10);
-            Ok(10)
+            sysfs::on(DEFAULT_TICK_MS);
+            Ok(DEFAULT_TICK_MS as i32)
         }
     }
 
@@ -136,27 +252,28 @@ impl IRichtapVibrator for RichtapTranslator {
         _steep_mode: bool,
         _callback: Option<&Strong<dyn IRichtapCallback>>
     ) -> BinderResult<()> {
-        let seq = SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
+        let seq = cancel_all();
 
         if env_info.len() < 3 || env_info.len() % 3 != 0 {
-            sysfs::on(10);
+            sysfs::on(DEFAULT_TICK_MS);
             return Ok(());
         }
 
-        let mut events = Vec::with_capacity(env_info.len() / 3);
+        // chunk = (time_ms, amplitude_0_255, <unused third field>)
+        let mut events: Vec<(u32, f32)> = Vec::with_capacity(env_info.len() / 3);
         for chunk in env_info.chunks_exact(3) {
-            events.push((chunk[0] as u32, (chunk[1] as f32) / 255.0));
+            events.push((
+                clamp_ms(chunk[0], MAX_ENV_MS),
+                ((chunk[1] as f32) / 255.0).clamp(0.0, 1.0),
+            ));
         }
 
-        let total_time = events
-            .last()
-            .map(|e| e.0)
-            .unwrap_or(0);
+        let total_time = events.last().map(|e| e.0).unwrap_or(0);
 
         if total_time <= 150 {
             hal_log!("IRichtapVibrator::performEnvelope() - compressing {}ms tap to 10ms click", total_time);
             sysfs::set_amplitude(0.7);
-            sysfs::on(10);
+            sysfs::on(DEFAULT_TICK_MS);
             return Ok(());
         }
 
@@ -166,7 +283,7 @@ impl IRichtapVibrator for RichtapTranslator {
             let mut current_time = 0;
 
             for &(target_time, target_amp) in &events {
-                if SEQUENCE.load(Ordering::SeqCst) != seq {
+                if !is_current(seq) {
                     return;
                 }
 
@@ -174,15 +291,20 @@ impl IRichtapVibrator for RichtapTranslator {
                     let delay = target_time - current_time;
 
                     if target_amp > 0.0 {
-                        crate::sysfs::set_amplitude(target_amp.clamp(0.0, 1.0));
-                        crate::sysfs::on(delay);
+                        sysfs::set_amplitude(target_amp);
+                        sysfs::on(delay);
                     } else {
-                        crate::sysfs::off();
+                        sysfs::off();
                     }
 
                     thread::sleep(Duration::from_millis(delay as u64));
                     current_time = target_time;
                 }
+            }
+
+            // Only stop the motor if nobody started something newer meanwhile.
+            if is_current(seq) {
+                sysfs::off();
             }
         });
 
@@ -195,7 +317,7 @@ impl IRichtapVibrator for RichtapTranslator {
         _callback: Option<&Strong<dyn IRichtapCallback>>
     ) -> BinderResult<()> {
         hal_log!("IRichtapVibrator::performRtp()");
-        SEQUENCE.fetch_add(1, Ordering::SeqCst);
+        cancel_all();
         sysfs::on(50);
         Ok(())
     }
@@ -210,71 +332,55 @@ impl IRichtapVibrator for RichtapTranslator {
         _callback: Option<&Strong<dyn IRichtapCallback>>
     ) -> BinderResult<()> {
         hal_log!(
-            "IRichtapVibrator::performHe() - interval: {}, amp: {}, freq: {}, pattern_len: {}",
+            "IRichtapVibrator::performHe() - looper: {}, interval: {}, amp: {}, freq: {}, pattern_len: {}, head: {:?}",
+            looper,
             interval,
             amplitude,
             freq,
-            pattern_info.len()
+            pattern_info.len(),
+            &pattern_info[..pattern_info.len().min(8)]
         );
 
-        let seq = SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
+        let seq = cancel_all();
         let base_amplitude = if amplitude > 0 {
             ((amplitude as f32) / 255.0).clamp(0.0, 1.0)
         } else {
             1.0
         };
 
-        if pattern_info.is_empty() || pattern_info.len() <= 16 {
-            let mut duration = if interval > 0 { interval as u32 } else { 10 };
+        let events = parse_he(pattern_info);
 
-            if !pattern_info.is_empty() {
-                if pattern_info[0] == 4096 && pattern_info.len() > 6 {
-                    duration = pattern_info[6] as u32;
-                } else if pattern_info[0] == 4097 && interval <= 0 {
-                    duration = 8;
+        // 1. FAST PATH: empty pattern or a single event (keyboard taps, clicks).
+        //    Plays inline, no thread, always bounded.
+        if events.len() <= 1 {
+            let mut duration = match clamp_ms(interval, MAX_FAST_MS) {
+                0 => DEFAULT_TICK_MS,
+                d => d,
+            };
+            let mut amp = base_amplitude;
+
+            if let Some(&(_, ev_dur, ev_int)) = events.first() {
+                // Single continuous event with explicit duration wins over `interval`.
+                if ev_dur > TRANSIENT_MS {
+                    duration = ev_dur;
+                }
+                if ev_int > 0 {
+                    amp = (((ev_int as f32) / 100.0) * base_amplitude).clamp(0.0, 1.0);
                 }
             }
 
-            hal_log!("IRichtapVibrator::performHe() - Fast path intercept, playing inline: {}ms", duration);
-            crate::sysfs::set_amplitude(base_amplitude);
-            crate::sysfs::on(duration);
+            hal_log!("IRichtapVibrator::performHe() - fast path, playing inline: {}ms", duration);
+            sysfs::set_amplitude(amp);
+            sysfs::on(duration);
             return Ok(());
         }
 
-        let mut events = Vec::with_capacity(pattern_info.len() / 4);
-        let mut idx = 0;
-        let mut first_event = true;
+        // 2. COMPLEX PATH: multi-event patterns (double click, ringtones, media).
+        let mut events = events;
+        // Kill initial framework latency on the very first event.
+        events[0].0 = 0;
 
-        while idx < pattern_info.len() {
-            if pattern_info[idx] == 4096 && idx + 6 < pattern_info.len() {
-                let size = pattern_info[idx + 1] as usize;
-                let mut rel_time = pattern_info[idx + 3] as u32;
-                let intensity = pattern_info[idx + 4] as u32;
-                let duration = pattern_info[idx + 6] as u32;
-                if first_event {
-                    rel_time = 0;
-                    first_event = false;
-                }
-
-                events.push((rel_time, duration, intensity));
-                idx += size + 2;
-            } else if pattern_info[idx] == 4097 && idx + 3 < pattern_info.len() {
-                let size = pattern_info[idx + 1] as usize;
-                let mut rel_time = pattern_info[idx + 3] as u32;
-
-                if first_event {
-                    rel_time = 0;
-                    first_event = false;
-                }
-
-                events.push((rel_time, 8, 100));
-                idx += size + 2;
-            } else {
-                idx += 1;
-            }
-        }
-
-        let looper_count = if looper > 0 { looper as usize } else { 1 };
+        let looper_count = if looper > 0 { (looper as usize).min(MAX_LOOPS) } else { 1 };
         let pattern_duration = events
             .last()
             .map(|e| e.0 + e.1)
@@ -286,7 +392,7 @@ impl IRichtapVibrator for RichtapTranslator {
                 let mut current_time = time_offset;
 
                 for &(rel_time, duration, intensity) in &events {
-                    if SEQUENCE.load(Ordering::SeqCst) != seq {
+                    if !is_current(seq) {
                         return;
                     }
 
@@ -295,17 +401,22 @@ impl IRichtapVibrator for RichtapTranslator {
                         thread::sleep(Duration::from_millis((target_time - current_time) as u64));
                     }
 
-                    if SEQUENCE.load(Ordering::SeqCst) != seq {
+                    if !is_current(seq) {
                         return;
                     }
 
                     let event_amp = ((intensity as f32) / 100.0) * base_amplitude;
-                    crate::sysfs::set_amplitude(event_amp.clamp(0.0, 1.0));
-                    crate::sysfs::on(duration);
+                    sysfs::set_amplitude(event_amp.clamp(0.0, 1.0));
+                    sysfs::on(duration);
 
                     current_time = target_time + duration;
                     thread::sleep(Duration::from_millis(duration as u64));
                 }
+            }
+
+            // Guarantee the motor is stopped, but never kill a newer vibration.
+            if is_current(seq) {
+                sysfs::off();
             }
         });
 
