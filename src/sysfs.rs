@@ -1,8 +1,56 @@
+use std::env;
 use std::fs;
 use std::path::Path;
 use crate::hal_log;
 
 use std::sync::OnceLock;
+
+// ERM pulse boost, merged from the erm-haptic daemon. LRA motors want the 8-10 ms
+// pulses this HAL writes; an ERM needs tens of ms to spin up. Off unless the service
+// block sets ERM_HAPTIC_ENABLE=1 - an LRA must never enable this, it uses gain instead.
+const DEFAULT_THRESHOLD_MS: u32 = 50;
+const DEFAULT_TARGET_MS: u32 = 80;
+const MAX_TARGET_MS: u32 = 1000;
+
+fn boost_config() -> Option<(u32, u32)> {
+    static CFG: OnceLock<Option<(u32, u32)>> = OnceLock::new();
+    *CFG.get_or_init(|| {
+        let read = |name: &str, default: u32| -> u32 {
+            env::var(name)
+                .ok()
+                .and_then(|s| s.trim().parse::<u32>().ok())
+                .unwrap_or(default)
+        };
+        if read("ERM_HAPTIC_ENABLE", 0) != 1 {
+            hal_log!("erm boost disabled - set ERM_HAPTIC_ENABLE=1 to extend short pulses");
+            return None;
+        }
+        let threshold = read("ERM_HAPTIC_THRESHOLD_MS", DEFAULT_THRESHOLD_MS);
+        let target = read("ERM_HAPTIC_TARGET_MS", DEFAULT_TARGET_MS);
+        if threshold >= 1 && target > threshold && target <= MAX_TARGET_MS {
+            hal_log!(
+                "erm boost config - below {} ms becomes {} ms",
+                threshold,
+                target
+            );
+            Some((threshold, target))
+        } else {
+            hal_log!(
+                "erm boost config invalid ({}, {}), boost disabled",
+                threshold,
+                target
+            );
+            None
+        }
+    })
+}
+
+fn boosted(duration_ms: u32) -> u32 {
+    match boost_config() {
+        Some((threshold, target)) if duration_ms > 0 && duration_ms < threshold => target,
+        _ => duration_ms,
+    }
+}
 
 fn get_vibrator_prefix() -> &'static str {
     static PREFIX: OnceLock<&'static str> = OnceLock::new();
@@ -36,8 +84,12 @@ pub fn has_node(node: &str) -> bool {
 }
 
 pub fn on(duration_ms: u32) {
+    let actual_ms = boosted(duration_ms);
+    if actual_ms != duration_ms {
+        hal_log!("sysfs::on() - boost {} ms to {} ms", duration_ms, actual_ms);
+    }
     let _ = set_node("activate", "0");
-    let _ = set_node("duration", &duration_ms.to_string());
+    let _ = set_node("duration", &actual_ms.to_string());
     let _ = set_node("activate", "1");
 }
 
