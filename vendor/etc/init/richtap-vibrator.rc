@@ -6,7 +6,27 @@ service vendor.vibrator.richtap /vendor/bin/hw/vendor-aac-hardware-richtap-vibra
     setenv RICHTAP_DEVICE_PATH  /dev/aw8697_haptic
     setenv ENV_RICHTAP_CONFIG_PATH /vendor/etc/aac_richtap.config
 #BSP: Vibr 2.0 for AAC RichTap support by yun.luo 20220930 end
+    # ERM motors only (MTK ROM ports): pulses shorter than THRESHOLD ms become TARGET ms.
+    # Leave this at 0 on an LRA - it wants the short pulses, and uses gain for amplitude.
+    setenv ERM_HAPTIC_ENABLE 0
+    setenv ERM_HAPTIC_THRESHOLD_MS 50
+    setenv ERM_HAPTIC_TARGET_MS 80
 #BSP: add get vibrator gain by jiangzhu.yang at 20230324 start
 on property:persist.sys.value_vibrate_ontouch=*
     setprop persist.vendor.vibrate_gain ${persist.sys.value_vibrate_ontouch}
 #BSP: add get vibrator gain by jiangzhu.yang at 20230324 end
+
+# ERM motors only: prepare the regulator_vibrator LED. The order matters, attaching the
+# trigger recreates state, activate and duration, so state, chown and chmod come after it.
+# A device with no ERM has no /sys/class/leds/vibrator: these lines then log one
+# "Unable to open ... for write" each and do nothing else. Never point them at
+# vibrator_single - that is untested and can leave the motor running.
+on property:sys.boot_completed=1
+    write /sys/class/leds/vibrator/trigger transient
+    write /sys/class/leds/vibrator/state 1
+    chown system system /sys/class/leds/vibrator/state
+    chown system system /sys/class/leds/vibrator/activate
+    chown system system /sys/class/leds/vibrator/duration
+    chmod 0660 /sys/class/leds/vibrator/state
+    chmod 0660 /sys/class/leds/vibrator/activate
+    chmod 0660 /sys/class/leds/vibrator/duration
