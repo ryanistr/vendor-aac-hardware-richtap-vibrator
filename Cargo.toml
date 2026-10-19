@@ -1,8 +1,9 @@
 [package]
 name = "vendor-aac-hardware-richtap-vibrator"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
-authors = ["ryanistr"]
+authors = ["ryanistr", "Dadobye"]
+description = "AAC RichTap vibrator HAL translator with a built-in pulse extender for ERM motors (MediaTek ROM ports)"
 
 [dependencies]
 rsbinder = { version = "0.6.0", features = ["android_14"] }
