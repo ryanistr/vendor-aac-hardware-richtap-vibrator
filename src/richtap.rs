@@ -163,7 +163,8 @@ impl IRichtapVibrator for RichtapTranslator {
                     duration
                 );
                 sysfs::set_index(index);
-                let played = sysfs::on_clamped(duration);
+                sysfs::on(duration);
+                let played = duration;
                 Ok(played as i32)
             }
             None => {

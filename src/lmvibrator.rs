@@ -141,14 +141,13 @@ impl ILinearMotorVibrator for LmVibratorService {
             self.write_node("waveform_index", "0");
             Ok(self.write_node("vmax", &timeout_ms.to_string()))
         } else {
-            // Fallback: map the 0..32767 amplitude onto the 0..255 gain node
-            // and use activate/duration like the stock driver expects.
+            // Fallback: map the 0..32767 amplitude onto the 0..255 gain node and
+            // trigger through `brightness` — that is the node the stock service
+            // used on this AW22xxx driver (`activate`/`duration` do nothing).
             let gain = ((amplitude.max(0) as i64 * 255) / AMPLITUDE_MAX as i64)
                 .clamp(0, 255);
             self.write_node("gain", &gain.to_string());
-            let _ = self.write_node("activate", "0");
-            let _ = self.write_node("duration", &timeout_ms.max(0).to_string());
-            Ok(self.write_node("activate", "1"))
+            Ok(self.write_node("brightness", &gain.to_string()))
         }
     }
 
@@ -173,7 +172,7 @@ impl ILinearMotorVibrator for LmVibratorService {
         if self.aw8697 {
             Ok(self.write_node("brightness", "0"))
         } else {
-            Ok(self.write_node("activate", "0"))
+            Ok(self.write_node("brightness", "0"))
         }
     }
 
