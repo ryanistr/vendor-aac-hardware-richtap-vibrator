@@ -17,7 +17,6 @@ use crate::vendor::oplus::hardware::lmvibrator::ILinearMotorVibrator::BnLinearMo
 
 const VIBRATOR_SERVICE: &str = "android.hardware.vibrator.IVibrator/default";
 const VIBRATOR_MANAGER_SERVICE: &str = "android.hardware.vibrator.IVibratorManager/default";
-const LM_VIBRATOR_SERVICE: &str = "vendor.oplus.hardware.lmvibrator.ILinearMotorVibrator/default";
 
 fn main() {
     hal_log!("Initializing OPlus-adapted RichTap Vibrator HAL...");
@@ -45,17 +44,44 @@ fn main() {
 
     // The Richtap extension is attached to the IVibrator binder so a single
     // process serves both the standard and the vendor haptic interfaces.
-    vibrator_binder.as_binder().set_extension(&mut richtap_binder.as_binder())
-        .expect("Failed to attach Richtap extension");
+    if let Err(e) = vibrator_binder
+        .as_binder()
+        .set_extension(&mut richtap_binder.as_binder())
+    {
+        hal_log!("Failed to attach Richtap extension: {:?}", e);
+    }
+
+    // The OPLUS linear-motor vibrator is served as an extension of the
+    // IVibratorManager binder rather than as its own service_manager entry.
+    //
+    // Registering it as a separate service aborts: the hal_vibrator_default
+    // domain is only permitted to add the service types declared for it
+    // (android.hardware.vibrator.*), so adding
+    // vendor.oplus.hardware.lmvibrator.ILinearMotorVibrator/default is denied
+    // by SELinux:
+    //   "Failed to register lmvibrator service: Security / Ok: SELinux denied."
+    // Fixing that needs a new service_manager `add` rule, and SELinux policy
+    // must not be edited on this project. An extension needs no service name,
+    // so it is reachable without touching policy.
+    if let Err(e) = manager_binder
+        .as_binder()
+        .set_extension(&mut lm_binder.as_binder())
+    {
+        hal_log!("Failed to attach lmvibrator extension: {:?}", e);
+    }
 
     // All binders are constructed first so every implementation's start-up
     // logging happens before the first registration can fail.
-    hub::add_service(VIBRATOR_SERVICE, vibrator_binder.as_binder())
-        .expect("Failed to register Vibrator service");
-    hub::add_service(VIBRATOR_MANAGER_SERVICE, manager_binder.as_binder())
-        .expect("Failed to register VibratorManager service");
-    hub::add_service(LM_VIBRATOR_SERVICE, lm_binder.as_binder())
-        .expect("Failed to register lmvibrator service");
+    //
+    // Registrations are deliberately non-fatal: a HAL that aborts here takes
+    // the whole vibrator service down with it and crash-loops, which is far
+    // worse than running with one interface missing.
+    if let Err(e) = hub::add_service(VIBRATOR_SERVICE, vibrator_binder.as_binder()) {
+        hal_log!("Failed to register Vibrator service: {:?}", e);
+    }
+    if let Err(e) = hub::add_service(VIBRATOR_MANAGER_SERVICE, manager_binder.as_binder()) {
+        hal_log!("Failed to register VibratorManager service: {:?}", e);
+    }
 
     hal_log!("Services registered successfully. Joining thread pool...");
     ProcessState::join_thread_pool().unwrap();
