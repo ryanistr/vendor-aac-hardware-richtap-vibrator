@@ -1,6 +1,7 @@
 use rsbinder::{ Interface, Strong, status::Result as BinderResult };
 use crate::vendor::aac::hardware::richtap::vibrator::IRichtapVibrator::IRichtapVibrator;
 use crate::vendor::aac::hardware::richtap::vibrator::IRichtapCallback::IRichtapCallback;
+use crate::pls_vibra_config::PlsVibraConfig;
 use crate::sysfs;
 use crate::hal_log;
 use std::sync::atomic::{ AtomicUsize, Ordering };
@@ -9,12 +10,61 @@ use std::time::Duration;
 
 static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 
-pub struct RichtapTranslator;
+/// Upper bound on a single pulsed vibration. RTP/OEM ringtone entries in
+/// effect_waveform.xml carry durations of 20-60 s; the framework stops the
+/// vibration itself, so this only guards against a stuck motor.
+
+
+pub struct RichtapTranslator {
+    /// OEM effect definitions loaded from the OPlus VibratorService XML
+    /// (effect_waveform.xml / inputmethod_duration_map.xml).
+    oplus_cfg: PlsVibraConfig,
+}
 
 impl RichtapTranslator {
-    pub fn new() -> Self {
-        hal_log!("RichtapTranslator::new()");
-        Self {}
+    pub fn new(oplus_cfg: PlsVibraConfig) -> Self {
+        hal_log!(
+            "RichtapTranslator::new() - oplus config loaded: {} effects, ime overrides: {}",
+            oplus_cfg.effect_count(),
+            oplus_cfg.has_ime_overrides()
+        );
+        Self { oplus_cfg }
+    }
+
+    /// Resolve an effect id to (sysfs index, duration) using the OEM XML map
+    /// first and falling back to the Android prebaked table.
+    fn resolve_effect(&self, effect: i32) -> Option<(u32, u32)> {
+        if let Some(e) = self.oplus_cfg.get_effect(effect) {
+            hal_log!(
+                "RichtapTranslator::resolve_effect() - OEM id {} -> wave {} / {}ms ({}, usage={})",
+                effect,
+                e.waveform_id,
+                e.duration_ms,
+                e.typ,
+                e.usage
+            );
+            if e.duration_ms == 0 {
+                return None;
+            }
+            // The waveform id is what the AWINIC driver expects in the
+            // `index` node; durations above the driver's RAM table are
+            // replayed as a plain timed pulse.
+            return Some((e.waveform_id.max(0) as u32, e.duration_ms));
+        }
+
+        // Android prebaked effects (AIDL Effect enum values).
+        let mapped = match effect {
+            2 => (1, 10),  // TICK
+            0 => (2, 15),  // CLICK
+            21 => (4, 20), // TEXTURE_TICK
+            5 => (5, 30),  // HEAVY_CLICK
+            1 => (6, 60),  // DOUBLE_CLICK
+            3 => (7, 35),  // THUD
+            4 => (1, 15),  // POP
+            _ => (0, 0),
+        };
+
+        if mapped.0 > 0 { Some(mapped) } else { None }
     }
 }
 
@@ -92,7 +142,7 @@ impl IRichtapVibrator for RichtapTranslator {
     ) -> BinderResult<()> {
         hal_log!("IRichtapVibrator::on() - timeout_ms: {}", timeout_ms);
         SEQUENCE.fetch_add(1, Ordering::SeqCst);
-        sysfs::on(timeout_ms as u32);
+        sysfs::on(timeout_ms.max(0) as u32);
         Ok(())
     }
 
@@ -103,30 +153,27 @@ impl IRichtapVibrator for RichtapTranslator {
         _callback: Option<&Strong<dyn IRichtapCallback>>
     ) -> BinderResult<i32> {
         SEQUENCE.fetch_add(1, Ordering::SeqCst);
-        let (index, duration) = match effect {
-            2 => (1, 10), // Effect::TICK
-            0 => (2, 15), // Effect::CLICK
-            21 => (4, 20), // Effect::TEXTURE_TICK
-            5 => (5, 30), // Effect::HEAVY_CLICK
-            1 => (6, 60), // Effect::DOUBLE_CLICK
-            3 => (7, 35), // Effect::THUD
-            4 => (1, 15), // Effect::POP
-            _ => (0, 0),
-        };
 
-        if index > 0 {
-            hal_log!(
-                "IRichtapVibrator::perform() - routing effect {} to hardware index {}",
-                effect,
-                index
-            );
-            sysfs::set_index(index);
-            sysfs::on(duration);
-            Ok(duration as i32)
-        } else {
-            hal_log!("IRichtapVibrator::perform() - raw fallback for effect {}", effect);
-            sysfs::on(10);
-            Ok(10)
+        match self.resolve_effect(effect) {
+            Some((index, duration)) => {
+                hal_log!(
+                    "IRichtapVibrator::perform() - effect {} -> index {} duration {}ms",
+                    effect,
+                    index,
+                    duration
+                );
+                sysfs::set_index(index);
+                let played = sysfs::on_clamped(duration);
+                Ok(played as i32)
+            }
+            None => {
+                hal_log!(
+                    "IRichtapVibrator::perform() - no mapping for effect {}, short fallback",
+                    effect
+                );
+                sysfs::on(10);
+                Ok(10)
+            }
         }
     }
 
@@ -145,7 +192,7 @@ impl IRichtapVibrator for RichtapTranslator {
 
         let mut events = Vec::with_capacity(env_info.len() / 3);
         for chunk in env_info.chunks_exact(3) {
-            events.push((chunk[0] as u32, (chunk[1] as f32) / 255.0));
+            events.push((chunk[0].max(0) as u32, (chunk[1] as f32) / 255.0));
         }
 
         let total_time = events
@@ -229,7 +276,7 @@ impl IRichtapVibrator for RichtapTranslator {
 
             if !pattern_info.is_empty() {
                 if pattern_info[0] == 4096 && pattern_info.len() > 6 {
-                    duration = pattern_info[6] as u32;
+                    duration = pattern_info[6].max(0) as u32;
                 } else if pattern_info[0] == 4097 && interval <= 0 {
                     duration = 8;
                 }
@@ -247,10 +294,10 @@ impl IRichtapVibrator for RichtapTranslator {
 
         while idx < pattern_info.len() {
             if pattern_info[idx] == 4096 && idx + 6 < pattern_info.len() {
-                let size = pattern_info[idx + 1] as usize;
-                let mut rel_time = pattern_info[idx + 3] as u32;
-                let intensity = pattern_info[idx + 4] as u32;
-                let duration = pattern_info[idx + 6] as u32;
+                let size = pattern_info[idx + 1].max(0) as usize;
+                let mut rel_time = pattern_info[idx + 3].max(0) as u32;
+                let intensity = pattern_info[idx + 4].max(0) as u32;
+                let duration = pattern_info[idx + 6].max(0) as u32;
                 if first_event {
                     rel_time = 0;
                     first_event = false;
@@ -259,8 +306,8 @@ impl IRichtapVibrator for RichtapTranslator {
                 events.push((rel_time, duration, intensity));
                 idx += size + 2;
             } else if pattern_info[idx] == 4097 && idx + 3 < pattern_info.len() {
-                let size = pattern_info[idx + 1] as usize;
-                let mut rel_time = pattern_info[idx + 3] as u32;
+                let size = pattern_info[idx + 1].max(0) as usize;
+                let mut rel_time = pattern_info[idx + 3].max(0) as u32;
 
                 if first_event {
                     rel_time = 0;

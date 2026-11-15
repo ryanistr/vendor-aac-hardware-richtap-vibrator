@@ -53,22 +53,22 @@ impl IVibrator for VibratorService {
         _strength: EffectStrength,
         _callback: &SIBinder
     ) -> BinderResult<i32> {
+        // Standard AIDL Effects — mapped to hardware indices + durations
         let (index, duration) = match effect {
-            Effect::TICK => (1, 10),
-            Effect::CLICK => (2, 15),
+            Effect::TICK       => (1, 10),
+            Effect::CLICK      => (2, 15),
             Effect::TEXTURE_TICK => (4, 20),
             Effect::HEAVY_CLICK => (5, 30),
             Effect::DOUBLE_CLICK => (6, 60),
-            Effect::THUD => (7, 35),
-            Effect::POP => (1, 15),
-            _ => (0, 0),
+            Effect::THUD       => (7, 35),
+            Effect::POP        => (1, 15),
+            _ => (0, 0),       // OEM custom → handled by richtap layer
         };
 
         if index > 0 {
             hal_log!(
-                "IVibrator::perform() - routing effect {:?} to hardware index {}",
-                effect,
-                index
+                "IVibrator::perform() - routing {:?} to hw index {} ({})",
+                effect, index, duration,
             );
             sysfs::set_index(index);
             sysfs::on(duration);
@@ -81,16 +81,17 @@ impl IVibrator for VibratorService {
 
     fn getSupportedEffects(&self) -> BinderResult<Vec<Effect>> {
         hal_log!("IVibrator::getSupportedEffects()");
-        Ok(
-            vec![
-                Effect::CLICK,
-                Effect::DOUBLE_CLICK,
-                Effect::TICK,
-                Effect::THUD,
-                Effect::POP,
-                Effect::HEAVY_CLICK
-            ]
-        )
+        // These are the standard Android effects exposed via AIDL IVibrator.
+        // OEM custom effects come from VibratorManagerService XML configs
+        // and are routed through the richtap extension layer.
+        Ok(vec![
+            Effect::CLICK,
+            Effect::DOUBLE_CLICK,
+            Effect::TICK,
+            Effect::THUD,
+            Effect::POP,
+            Effect::HEAVY_CLICK,
+        ])
     }
 
     fn setAmplitude(&self, amplitude: f32) -> BinderResult<()> {
