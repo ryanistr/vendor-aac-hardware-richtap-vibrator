@@ -13,6 +13,7 @@ fn main() {
         .source(aidl_dir.join("vendor/aac/hardware/richtap/vibrator/IRichtapCallback.aidl"))
         .source(aidl_dir.join("android/hardware/vibrator/IVibrator.aidl"))
         .source(aidl_dir.join("android/hardware/vibrator/IVibratorManager.aidl"))
+        .source(aidl_dir.join("vendor/oplus/hardware/lmvibrator/ILinearMotorVibrator.aidl"))
         .include_dir(&aidl_dir)
         .output(&out_file)
         .generate()
@@ -25,6 +26,7 @@ fn main() {
         "IVibratorCallbackAsyncService",
         "IRichtapVibratorAsyncService",
         "IRichtapCallbackAsyncService",
+        "ILinearMotorVibratorAsyncService",
     ];
     
     for t in async_traits {
