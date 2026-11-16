@@ -50,7 +50,7 @@ impl IVibrator for VibratorService {
     fn perform(
         &self,
         effect: Effect,
-        _strength: EffectStrength,
+        strength: EffectStrength,
         _callback: &SIBinder
     ) -> BinderResult<i32> {
         // Standard AIDL Effects — mapped to hardware indices + durations
@@ -65,10 +65,21 @@ impl IVibrator for VibratorService {
             _ => (0, 0),       // OEM custom → handled by richtap layer
         };
 
+        // Honour the caller's strength instead of always playing one weight:
+        // the felt weight on this chip is the pulse length (measured buckets:
+        // <=50 ms click, 60-80 thud, 90-190 weighted, >=200 heavy). An app that
+        // asks for TICK+STRONG should get a thud-sized pulse, not a click.
+        let duration = match strength {
+            EffectStrength::LIGHT => duration,
+            EffectStrength::MEDIUM => duration.max(55),
+            EffectStrength::STRONG => duration.max(95),
+            _ => duration,
+        };
+
         if index > 0 {
             hal_log!(
-                "IVibrator::perform() - routing {:?} to hw index {} ({})",
-                effect, index, duration,
+                "IVibrator::perform() - routing {:?} at {:?} to hw index {} ({} ms)",
+                effect, strength, index, duration,
             );
             sysfs::set_index(index);
             sysfs::on(duration);

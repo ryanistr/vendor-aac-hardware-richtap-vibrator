@@ -190,6 +190,38 @@ On an ERM port the node ownership can go back to root (`state`, `activate` and `
 recreated when the trigger is attached) — that is what the boot block fixes. A write of 0 to
 `/sys/class/leds/vibrator/brightness` detaches the trigger; never do that.
 
+## Haptic strength is pulse duration (measured on the X6739)
+
+The AW862xx on this device has no usable amplitude control, so how hard a haptic
+feels is decided by **how long the pulse is**. Measured on device with direct
+sysfs writes:
+
+| duration written to `duration` | felt character |
+|---|---|
+| 1 – 50 ms | **click** |
+| 60 – 80 ms | **tick** |
+| 90 – 180 ms | **thud** |
+| 190 – 300 ms | **heavy** |
+| > 300 ms | the driver switches to its looping "long vibration" wave |
+
+Everything else that looks like an amplitude control is a dead end here:
+
+* `gain` (DATDBG) has no audible effect for RAM playback — 20 and 255 sound identical;
+* duty-cycling a pulse changes nothing;
+* CONT mode / `cont_drv_lvl` is rejected by this driver (`activate_mode error`);
+* the LED `brightness` trigger never runs `ram_config`, so it always plays the
+  same short wave and cannot express an effect longer than `max_brightness` (255 ms).
+
+Therefore this HAL plays every request through `duration` + `activate=1` and
+stops with `activate=0`, and forwards the caller's timeout verbatim (`on()`),
+so an alarm asking for 500 ms gets a 500 ms heavy pulse and an app asking for
+its own duration keeps it. `perform()` maps `EffectStrength` onto the same
+buckets: LIGHT = the effect's own length, MEDIUM >= 55 ms, STRONG >= 95 ms.
+
+Note: mixing `duration` values inside one pattern can make segments overlap; the
+LM HAL caps each segment at the gap before the next one so dense patterns don't
+collapse into a machine-gun rattle.
+
 ## Credits
 
 Based on Nothing OS 4.1 Pacman's RichTap NDK implementation. 

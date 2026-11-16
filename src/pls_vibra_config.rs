@@ -19,6 +19,7 @@
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use std::sync::OnceLock;
 use crate::hal_log;
 
 // ── Data structures ────────────────────────────────────────────────────────
@@ -36,8 +37,26 @@ pub struct VibraEffect {
 pub struct PlsVibraConfig {
     /// effect_id → VibraEffect
     effects: HashMap<i32, VibraEffect>,
+    /// waveform_id → longest duration the ROM maps that waveform to.
+    ///
+    /// When the ROM runs the AOSP prebaked path
+    /// (`oplus.software.vibrator_qcom_lmvibrator`), VibratorManagerService
+    /// calls `IVibrator::perform(waveformId, …)` and drops the segment
+    /// duration, so the HAL has to know how long a waveform runs by itself.
+    /// One waveform id is reused at several durations (a touch tap and a
+    /// ringtone can share an id), so the longest is kept: the framework
+    /// schedules its own `off()` at the exact segment duration, while a
+    /// too-early self-stop would cut long effects short.
+    waveforms: HashMap<i32, u32>,
     /// IME package → (min_ms, max_ms)
     ime_durations: HashMap<String, (u32, u32)>,
+}
+
+/// Process-wide config, shared by the RichTap translator and the IVibrator
+/// implementation so the XML configs are parsed exactly once.
+pub fn global() -> &'static PlsVibraConfig {
+    static CFG: OnceLock<PlsVibraConfig> = OnceLock::new();
+    CFG.get_or_init(PlsVibraConfig::new)
 }
 
 impl PlsVibraConfig {
@@ -60,6 +79,13 @@ impl PlsVibraConfig {
     /// signals "no mapping found".
     pub fn get_effect(&self, effect_id: i32) -> Option<&VibraEffect> {
         self.effects.get(&effect_id)
+    }
+
+    /// Duration for a prebaked waveform id, as delivered through
+    /// `IVibrator::perform()`. `None` means the id is not an OPLUS waveform.
+    #[allow(dead_code)]
+    pub fn waveform_duration(&self, waveform_id: i32) -> Option<u32> {
+        self.waveforms.get(&waveform_id).copied()
     }
 
     /// Check whether there are any RTP‑type effects loaded.
@@ -130,10 +156,19 @@ impl PlsVibraConfig {
         let parsed = parse_effect_waveform(&text);
         let count = parsed.len();
         for eff in parsed {
+            self.waveforms
+                .entry(eff.waveform_id)
+                .and_modify(|longest| *longest = (*longest).max(eff.duration_ms))
+                .or_insert(eff.duration_ms);
             self.effects.insert(eff.effect_id, eff);
         }
         if count > 0 {
-            hal_log!("OPlus vbr: loaded {} effects from {}", count, dir);
+            hal_log!(
+                "OPlus vbr: loaded {} effects ({} waveforms) from {}",
+                count,
+                self.waveforms.len(),
+                dir
+            );
         }
     }
 

@@ -114,12 +114,19 @@ fn apply_amplitude(amplitude: u32) {
     let _ = set_node("gain", &amp.to_string());
 }
 
-fn start_motor() {
-    let amp = AMPLITUDE.load(Ordering::SeqCst).max(1);
-    let _ = set_node("brightness", &amp.to_string());
+fn start_motor(duration_ms: u32) {
+    // `brightness` is a duration in ms and the LED core clamps it to
+    // max_brightness (255); that path also never runs the driver's ram_config,
+    // so every effect played the same short wave. `duration` + `activate` is
+    // the path that honours the real length (an alarm asks for 500 ms) and lets
+    // the driver pick a heavier wave for longer pulses.
+    let _ = set_node("gain", "255");
+    let _ = set_node("duration", &duration_ms.to_string());
+    let _ = set_node("activate", "1");
 }
 
 fn stop_motor() {
+    let _ = set_node("activate", "0");
     let _ = set_node("brightness", "0");
 }
 
@@ -128,7 +135,7 @@ pub fn on(duration_ms: u32) {
     let total = boosted(duration_ms.max(1)).min(MAX_OEM_PULSE_MS);
     let seq = SEQUENCE.fetch_add(1, Ordering::SeqCst) + 1;
 
-    start_motor();
+    start_motor(total);
 
     if total == 0 || total == u32::MAX {
         return;

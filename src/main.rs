@@ -24,8 +24,9 @@ fn main() {
     ProcessState::start_thread_pool();
 
     // Load OEM effect definitions from the OPlus VibratorService XML configs
-    // so perform() can resolve OEM effect ids instead of using raw defaults.
-    let oplus_cfg = pls_vibra_config::PlsVibraConfig::new();
+    // so perform() can resolve OEM waveforms and effect ids instead of using
+    // raw defaults. Shared with the IVibrator implementation (see global()).
+    let oplus_cfg = pls_vibra_config::global();
 
     let richtap_service = richtap::RichtapTranslator::new(oplus_cfg);
     let richtap_binder = BnRichtapVibrator::new_binder(richtap_service);

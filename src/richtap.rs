@@ -18,11 +18,11 @@ static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
 pub struct RichtapTranslator {
     /// OEM effect definitions loaded from the OPlus VibratorService XML
     /// (effect_waveform.xml / inputmethod_duration_map.xml).
-    oplus_cfg: PlsVibraConfig,
+    oplus_cfg: &'static PlsVibraConfig,
 }
 
 impl RichtapTranslator {
-    pub fn new(oplus_cfg: PlsVibraConfig) -> Self {
+    pub fn new(oplus_cfg: &'static PlsVibraConfig) -> Self {
         hal_log!(
             "RichtapTranslator::new() - oplus config loaded: {} effects, ime overrides: {}",
             oplus_cfg.effect_count(),
