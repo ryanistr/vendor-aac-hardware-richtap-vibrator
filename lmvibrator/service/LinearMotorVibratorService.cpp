@@ -410,6 +410,8 @@ const std::vector<LinearMotorVibrator::Segment>* LinearMotorVibrator::fixedOverr
             // "clear all notifications" reuses effect_customized_spread_out; a
             // dismissal should confirm crisply, not thump
             {47,    {{0, 40, 255, 1}}},
+            // recents "clear all" (one_key_clear_recent_task_feedback)
+            {363,   {{0, 40, 255, 1}}},
             // game "weak" must not be a 200 ms thud
             {414,   {{0, 50, 255, 1}}},
             // name says long press / long gesture

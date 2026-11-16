@@ -253,6 +253,7 @@ ignore the ladder:
     wave 254   -> 60 ms        effect_notification_light (was 200 ms heavy)
     wave 342   -> 60 ms        effect_notification_short_2
     wave 47    -> 40 ms        "clear all notifications" (effect_customized_spread_out)
+    wave 363   -> 40 ms        recents "clear all" (one_key_clear_recent_task_feedback)
     wave 414   -> 50 ms        game_custom_vibration_weak
     wave 65537 -> 90 ms        input_method_long_press_effect
     wave 171   -> 90 ms        effect_other_threefingers_long
