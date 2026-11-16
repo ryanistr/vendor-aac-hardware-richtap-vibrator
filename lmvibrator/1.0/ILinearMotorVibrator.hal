@@ -1,0 +1,38 @@
+/*
+ * HIDL interface definition for
+ *   vendor.oplus.hardware.lmvibrator@1.0::ILinearMotorVibrator
+ *
+ * NOT the original file. Recovered from shipped artifacts:
+ *   - ROM_WORKDIR/oos15_old/erofs/odm/lib64/vendor.oplus.hardware.lmvibrator@1.0.so
+ *       BpHw/BnHw symbol table gives the exact argument types.
+ *   - /system/framework/vendor.oplus.hardware.lmvibrator-V1.0-java.jar
+ *       generated Proxy/Stub give the exact transaction ids (1..10), which are
+ *       assigned in declaration order, and the exact return types.
+ *
+ * transaction id -> method (from the Java stub's onTransact switch):
+ *   1  linearmotorVibratorOn(int, short, bool)   -> void
+ *   2  linearmotorVibratorOff()                  -> void
+ *   3  write_gun_type(int)                       -> void
+ *   4  getStatus()                               -> int32_t
+ *   5  setVmax(int)                              -> void
+ *   6  write_bullet_num(int)                     -> void
+ *   7  write_gun_mode(int)                       -> void
+ *   8  write_haptic_audio(string)                -> void
+ *   9  setVibratorTouchStyle(int)                -> void
+ *   10 getVibratorTouchStyle()                   -> int32_t
+ */
+
+package vendor.oplus.hardware.lmvibrator@1.0;
+
+interface ILinearMotorVibrator {
+    linearmotorVibratorOn(int32_t waveformId, int16_t amplitude, bool isRtpMode);
+    linearmotorVibratorOff();
+    write_gun_type(int32_t gunType);
+    getStatus() generates (int32_t status);
+    setVmax(int32_t vmax);
+    write_bullet_num(int32_t bulletNum);
+    write_gun_mode(int32_t gunMode);
+    write_haptic_audio(string data);
+    setVibratorTouchStyle(int32_t touchStyle);
+    getVibratorTouchStyle() generates (int32_t touchStyle);
+};

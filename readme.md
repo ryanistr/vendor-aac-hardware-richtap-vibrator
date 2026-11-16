@@ -190,6 +190,15 @@ On an ERM port the node ownership can go back to root (`state`, `activate` and `
 recreated when the trigger is attached) — that is what the boot block fixes. A write of 0 to
 `/sys/class/leds/vibrator/brightness` detaches the trigger; never do that.
 
+## Companion: the OPLUS linear-motor HIDL HAL
+
+[`lmvibrator/`](lmvibrator/README.md) holds the source-built
+`vendor.oplus.hardware.lmvibrator@1.0` HIDL service. That is the HAL the OPLUS
+framework calls for effect haptics (touch, keyboard, notification, alarm,
+fingerprint feedback); this RichTap HAL serves the standard AIDL vibrator
+interface and the vendor extensions. Both drive the same nodes, so the duration
+model described above applies to both.
+
 ## Haptic strength is pulse duration (measured on the X6739)
 
 The AW862xx on this device has no usable amplitude control, so how hard a haptic
